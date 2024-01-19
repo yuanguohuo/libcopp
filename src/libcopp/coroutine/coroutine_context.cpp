@@ -331,6 +331,51 @@ LIBCOPP_COPP_API int coroutine_context::create(coroutine_context *p, callback_ty
     return COPP_EC_FCONTEXT_MAKE_FAILED;
   }
 
+  //Yuanguo:
+  //        +================================+
+  //        |     <<private data>>           |
+  //        |                                |
+  //        +--------------------------------+
+  //        |  <<coroutine_context object>>  |
+  //        |                                |
+  //        |           callee_    ------->>>>>>>>>--------+
+  //        |                                |             |
+  //    p-> +--------------------------------+             |
+  //        |         <<fcontext>>           |             |
+  //        |                                |             |
+  //        |               RIP: 0x40-0x48 ->>>----------->>>----------> trampoline:
+  //        |               RBP: 0x38-0x40   |             |             +---------------------------------------------+
+  //        |               RBX: 0x30-0x38   |             |             |  /* push finish-address */                  |
+  //        |               R15: 0x28-0x30   |             |             |  push %rbp                                  |
+  //        |               R14: 0x20-0x28   |             |             |  /* jump to coroutine_context_callback */   |
+  //        |               R13: 0x18-0x20   |             |             |  jmp *%rbx                                  |
+  //        |               R12: 0x10-0x18   |             |             +---------------------------------------------+
+  //        |             guard: 0x08-0x10   |             |             所以，coroutine_context_callback的返回地址是
+  //        |fc_mxcsr|fc_x87_cw: 0x00-0x08   |             |             finish；但一般情况执行不到finish，因为:
+  //        +--------------------------------+ <<----------+             coroutine_context_callback的最后一行是yield，即
+  //        |                                |                           跳到其它coroutine，除非其它coroutine再跳回来.
+  //        |                                |
+  //        |                                |
+  //        |                                |
+  //        |                                |
+  //        |                                |
+  //        |                                |
+  //        |                                |
+  //        |                                |
+  //        |                                |
+  //        |                                |
+  //        |                                |
+  //        +================================+
+  //
+  // - p是一个coroutine；
+  // - 当coroutine没有运行时(例如现在刚创建出来，就没有运行)：
+  //     - p->callee_指向coroutine的fcontext (就是保存在栈上的寄存器值);
+  // - 当coroutine运行时：
+  //     - fcontext被销毁：跳入时(见jump_to-->copp_jump_fcontext_v2)，从fcontext上恢复寄存器，然后回收栈空间给函数使用：
+  //                  leaq  0x48(%rsp), %rsp /* prepare stack */
+  //     - 当coroutine yield时，它会再在当前栈上(很可能不是原来的位置)创建fcontext(就是把寄存器的值保存在栈上);
+  // 所以，coroutine一旦yield，就必须让它的callee_指向它的fcontext，这样才能再一次运行它。
+
   return COPP_EC_SUCCESS;
 }
 
