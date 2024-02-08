@@ -333,25 +333,27 @@ LIBCOPP_COPP_API int coroutine_context::create(coroutine_context *p, callback_ty
 
   //Yuanguo:
   //        +================================+
-  //        |     <<private data>>           |
+  //        |                                |
+  //        |       <<private data>>         |
   //        |                                |
   //        +--------------------------------+
   //        |  <<coroutine_context object>>  |
   //        |                                |
+  //        |           caller_              |
   //        |           callee_    ------->>>>>>>>>--------+
   //        |                                |             |
   //    p-> +--------------------------------+             |
   //        |         <<fcontext>>           |             |
   //        |                                |             |
   //        |               RIP: 0x40-0x48 ->>>----------->>>----------> trampoline:
-  //        |               RBP: 0x38-0x40   |             |             +---------------------------------------------+
-  //        |               RBX: 0x30-0x38   |             |             |  /* push finish-address */                  |
-  //        |               R15: 0x28-0x30   |             |             |  push %rbp                                  |
-  //        |               R14: 0x20-0x28   |             |             |  /* jump to coroutine_context_callback */   |
-  //        |               R13: 0x18-0x20   |             |             |  jmp *%rbx                                  |
-  //        |               R12: 0x10-0x18   |             |             +---------------------------------------------+
+  //        |               RBP: 0x38-0x40   |             |             +-------------------------------------------------------+
+  //        |               RBX: 0x30-0x38 ->>>>user_func  |             |  /* push finish-address */                            |
+  //        |               R15: 0x28-0x30   |             |             |  push %rbp                                            |
+  //        |               R14: 0x20-0x28   |             |             |  /* jump to user_func coroutine_context_callback */   |
+  //        |               R13: 0x18-0x20   |             |             |  jmp *%rbx                                            |
+  //        |               R12: 0x10-0x18   |             |             +-------------------------------------------------------+
   //        |             guard: 0x08-0x10   |             |             所以，coroutine_context_callback的返回地址是
-  //        |fc_mxcsr|fc_x87_cw: 0x00-0x08   |             |             finish；但一般情况执行不到finish，因为:
+  //        |fc_mxcsr|fc_x87_cw: 0x00-0x08   |             |             finish，退出进程；但一般执行不到finish，因为:
   //        +--------------------------------+ <<----------+             coroutine_context_callback的最后一行是yield，即
   //        |                                |                           跳到其它coroutine，除非其它coroutine再跳回来.
   //        |                                |
@@ -370,11 +372,17 @@ LIBCOPP_COPP_API int coroutine_context::create(coroutine_context *p, callback_ty
   // - p是一个coroutine；
   // - 当coroutine没有运行时(例如现在刚创建出来，就没有运行)：
   //     - p->callee_指向coroutine的fcontext (就是保存在栈上的寄存器值);
+  //     - p->caller_无意义；
   // - 当coroutine运行时：
-  //     - fcontext被销毁：跳入时(见jump_to-->copp_jump_fcontext_v2)，从fcontext上恢复寄存器，然后回收栈空间给函数使用：
-  //                  leaq  0x48(%rsp), %rsp /* prepare stack */
+  //     - p->callee_无意义；它指向的fcontext被销毁：跳入时(见jump_to-->copp_jump_fcontext_v2)，从fcontext上恢复寄存器，
+  //       然后回收栈空间给函数使用：leaq  0x48(%rsp), %rsp /* prepare stack */
+  //     - p->caller_指向start/resume它的coroutine的fcontext; 这有什么用呢？试想，当前coroutine结束时，它若不跳到别的
+  //       coroutine，就会运行到`finish`，退出进程。这通常不是想要的(一个coroutine结束整个程序就退出了)，所以coroutine
+  //       结束时，要跳到别的coroutine，这时就可以跳到caller_;
   //     - 当coroutine yield时，它会再在当前栈上(很可能不是原来的位置)创建fcontext(就是把寄存器的值保存在栈上);
-  // 所以，coroutine一旦yield，就必须让它的callee_指向它的fcontext，这样才能再一次运行它。
+  //
+  // 所以，coroutine一旦yield，就必须让它的callee_指向它的fcontext，这样才能再一次运行它(resume)。
+  // 这一点至关重要：coroutine_context_callback函数和jump_to函数做了细心处理。
 
   return COPP_EC_SUCCESS;
 }
